@@ -12,6 +12,8 @@ use colorize::ToColored;
 mod api;
 use api::{translate, tureng_ac, Lang, RespResult};
 
+static mut ISATTY: bool = false;
+
 struct Args {
     interactive: bool,
     lang: Lang,
@@ -51,6 +53,7 @@ impl Args {
 
 // TODO: needs concurrency
 fn main() -> ExitCode {
+    unsafe { ISATTY = libc::isatty(libc::STDOUT_FILENO) != 0 }
     let mut envargs = std::env::args();
     let program = envargs.next().unwrap();
     let Some(args) = Args::get_args(&mut envargs) else {

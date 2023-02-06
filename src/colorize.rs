@@ -1,6 +1,8 @@
 use std::fmt::Display;
 use termion::color;
 
+use crate::ISATTY;
+
 pub struct Colored<D> {
     d: D,
     code: &'static str,
@@ -8,9 +10,14 @@ pub struct Colored<D> {
 
 impl<D: Display> Display for Colored<D> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.write_str(self.code)?;
+        let isatty = unsafe { ISATTY };
+        if isatty {
+            f.write_str(self.code)?;
+        }
         self.d.fmt(f)?;
-        f.write_str("\x1b[0m")?;
+        if isatty {
+            f.write_str("\x1b[0m")?;
+        }
         Ok(())
     }
 }
