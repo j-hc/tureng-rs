@@ -31,17 +31,21 @@ impl Default for Args {
 }
 
 impl Args {
-    fn get_args(args: &mut std::env::Args) -> Option<Self> {
-        let mut res_args = Self::default();
-        while let Some(arg) = args.next() {
+    fn get_args(envargs: &mut std::env::Args) -> Option<Self> {
+        let mut args = Self::default();
+        while let Some(arg) = envargs.next() {
             match arg.as_str() {
-                "--limit" => res_args.limit = args.next()?.parse().ok()?,
-                "--interactive" | "-i" => res_args.interactive = true,
-                "--lang" | "-l" => res_args.lang = Lang::from_str(&args.next()?).ok()?,
-                _ => res_args.word = Some(arg),
+                "--limit" => args.limit = envargs.next()?.parse().ok()?,
+                "--interactive" | "-i" => args.interactive = true,
+                "--lang" | "-l" => args.lang = Lang::from_str(&envargs.next()?).ok()?,
+                _ => args.word = Some(arg),
             }
         }
-        Some(res_args)
+
+        if !args.interactive && args.word.is_none() {
+            return None;
+        }
+        Some(args)
     }
 }
 
@@ -49,7 +53,7 @@ fn main() -> ExitCode {
     let mut envargs = std::env::args();
     let program = envargs.next().unwrap();
     let Some(args) = Args::get_args(&mut envargs) else {
-        eprintln!("Usage: {program} <word> <optional --lang, -l ende|enes|enfr|entr> <optional --interactive, -i>");
+        eprintln!("Usage: {program} <word> <optional --lang, -l ende|enes|enfr|entr> <optional --interactive, -i> <option --limit>");
         return ExitCode::FAILURE;
     };
 
@@ -65,13 +69,11 @@ fn main() -> ExitCode {
                 return ExitCode::SUCCESS;
             }
         }
+    } else if let Some(word) = args.word {
+        word
     } else {
-        if let Some(word) = args.word {
-            word
-        } else {
-            eprintln!("ERROR: No word was supplied!");
-            return ExitCode::FAILURE;
-        }
+        eprintln!("ERROR: No word was supplied!");
+        return ExitCode::FAILURE;
     };
 
     let tr = match translate(&word, args.lang) {
@@ -91,8 +93,8 @@ fn main() -> ExitCode {
 }
 
 fn repr_results(mut results: Vec<RespResult>, swap: bool) {
-    const WIDTH: usize = 30;
-    const WIDTH2: usize = 32;
+    const WIDTH: usize = 26;
+    const WIDTH2: usize = WIDTH + 2;
     if swap {
         for r in results.iter_mut() {
             std::mem::swap(&mut r.term_a, &mut r.term_b);
@@ -197,7 +199,7 @@ fn interactive(lang: Lang, popup_sz: u16) -> io::Result<Option<String>> {
             if i == index {
                 write!(stdout, " {}", s.white_bg())?;
             } else {
-                write!(stdout, "  {}", s)?;
+                write!(stdout, "  {s}")?;
             }
             write!(stdout, "\r\n")?;
         }
