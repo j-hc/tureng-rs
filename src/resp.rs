@@ -1,32 +1,29 @@
-use serde::{Deserialize, Serialize};
+use miniserde::{Deserialize, Serialize};
 
-use miniserde::{json, Deserialize, Serialize};
-
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct RespRoot {
     // #[serde(rename = "AFullTextResults")]
     // pub afull_text_results: Vec<RespResult>,
     #[serde(rename = "AResults")]
     pub aresults: Vec<RespResult>,
-    #[serde(rename = "AccentInsensitive")]
-    pub accent_insensitive: bool,
+    // #[serde(rename = "AccentInsensitive")]
+    // pub accent_insensitive: bool,
     // #[serde(rename = "AvailabilityOnOtherDictionaries")]
     // pub availability_on_other_dictionaries: AvailabilityOnOtherDictionaries,
     // #[serde(rename = "BFullTextResults")]
     // pub bfull_text_results: Vec<RespResult>,
     #[serde(rename = "BResults")]
     pub bresults: Vec<RespResult>,
-    #[serde(rename = "HasSlangTerms")]
-    pub has_slang_terms: bool,
-    #[serde(rename = "IsFound")]
-    pub is_found: bool,
-    #[serde(rename = "IsSearchTermSlang")]
-    pub is_search_term_slang: bool,
-    #[serde(rename = "PrimeATerm")]
-    pub prime_aterm: String,
-    #[serde(rename = "SearchedTerm")]
-    pub searched_term: String,
+    // #[serde(rename = "HasSlangTerms")]
+    // pub has_slang_terms: bool,
+    // #[serde(rename = "IsFound")]
+    // pub is_found: bool,
+    // #[serde(rename = "IsSearchTermSlang")]
+    // pub is_search_term_slang: bool,
+    // #[serde(rename = "PrimeATerm")]
+    // pub prime_aterm: String,
+    // #[serde(rename = "SearchedTerm")]
+    // pub searched_term: String,
     // #[serde(rename = "Suggestions")]
     // pub suggestions: Value,
     // #[serde(rename = "VoiceId")]
@@ -38,7 +35,6 @@ pub struct RespRoot {
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct RespResult {
     // #[serde(rename = "CategoryId")]
     // pub category_id: String,

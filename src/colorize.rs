@@ -1,4 +1,5 @@
 use std::fmt::Display;
+use termion::color;
 
 pub struct Colored<D> {
     d: D,
@@ -18,60 +19,60 @@ pub trait ToColored: Display + Sized {
     fn red(&self) -> Colored<&Self> {
         Colored {
             d: self,
-            code: termion::color::Red.fg_str(),
+            code: color::Red.fg_str(),
         }
     }
 
     fn white_bg(&self) -> Colored<&Self> {
         Colored {
             d: self,
-            code: termion::color::White.bg_str(),
+            code: color::White.bg_str(),
         }
     }
 
     fn green(&self) -> Colored<&Self> {
         Colored {
             d: self,
-            code: termion::color::Green.fg_str(),
+            code: color::Green.fg_str(),
         }
     }
 
     fn black(&self) -> Colored<&Self> {
         Colored {
             d: self,
-            code: termion::color::Black.fg_str(),
+            code: color::Black.fg_str(),
         }
     }
     fn yellow(&self) -> Colored<&Self> {
         Colored {
             d: self,
-            code: termion::color::Yellow.fg_str(),
+            code: color::Yellow.fg_str(),
         }
     }
     fn blue(&self) -> Colored<&Self> {
         Colored {
             d: self,
-            code: termion::color::Black.fg_str(),
+            code: color::Black.fg_str(),
         }
     }
     fn magenta(&self) -> Colored<&Self> {
         Colored {
             d: self,
-            code: termion::color::Magenta.fg_str(),
+            code: color::Magenta.fg_str(),
         }
     }
     fn cyan(&self) -> Colored<&Self> {
         Colored {
             d: self,
-            code: termion::color::Cyan.fg_str(),
+            code: color::Cyan.fg_str(),
         }
     }
     fn white(&self) -> Colored<&Self> {
         Colored {
             d: self,
-            code: termion::color::White.fg_str(),
+            code: color::White.fg_str(),
         }
     }
 }
 
-impl<D: Display > ToColored for D {}
+impl<D: Display> ToColored for D {}

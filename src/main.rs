@@ -1,6 +1,7 @@
+use miniserde::{json, Deserialize};
 use std::error::Error;
 use std::fmt::Display;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::panic::Location;
 use std::process::ExitCode;
 use std::str::FromStr;
@@ -49,7 +50,7 @@ fn main() -> ExitCode {
     let tr = match translate(&word, lang) {
         Ok(resp) => resp,
         Err(err) => {
-            eprintln!("ERROR: {}", err);
+            eprintln!("ERROR: {err}");
             return ExitCode::FAILURE;
         }
     };
@@ -115,6 +116,7 @@ fn interactive(lang: Lang) -> io::Result<Option<String>> {
     stdout.flush()?;
     let mut tr_results: Vec<String> = Vec::with_capacity(0);
     let mut agent = ureq::agent();
+    let mut resp_buf: Vec<u8> = Vec::new();
     for key in keys {
         let key = key?;
         let prev_ip_len = ip.len();
@@ -159,8 +161,9 @@ fn interactive(lang: Lang) -> io::Result<Option<String>> {
             // new_tr_results.push("a bc".repeat(ip.len()).to_string());
             // tr_results = new_tr_results;
             let word = String::from_iter(ip.iter());
-            if let Ok(r) = tureng_ac(&word, lang, &mut agent) {
+            if let Ok(r) = tureng_ac(&word, lang, &mut agent, &mut resp_buf) {
                 tr_results = r;
+                tr_results.push(tr_results.len().to_string());
             }
         }
 
@@ -194,31 +197,51 @@ fn interactive(lang: Lang) -> io::Result<Option<String>> {
     Ok(None)
 }
 
-#[allow(clippy::result_large_err)]
-fn tureng_ac(word: &str, lang: Lang, agent: &mut Agent) -> Result<Vec<String>, LocError> {
+fn tureng_ac(
+    word: &str,
+    lang: Lang,
+    agent: &mut Agent,
+    buf: &mut Vec<u8>,
+) -> Result<Vec<String>, LocError> {
     const BASE: &str = "http://ac.tureng.co/?t=";
     const PARAM: &str = "&l=";
     let lang = lang.to_str();
     let mut url = String::with_capacity(BASE.len() + PARAM.len() + word.len() + 4);
-    url.push_str("http://ac.tureng.co/?t=");
+    url.push_str(BASE);
     url.push_str(word);
-    url.push_str("&l=");
+    url.push_str(PARAM);
     url.push_str(lang);
     let r = agent.get(&url).call()?;
-    Ok(r.into_json::<Vec<String>>()?)
+    let s = reader_to_json_with_buf(&mut r.into_reader(), buf)?;
+    Ok(s)
 }
 
-#[allow(clippy::result_large_err)]
 fn translate(word: &str, lang: Lang) -> Result<RespRoot, LocError> {
     const BASE: &str = "http://api.tureng.com/v1/dictionary/";
     let lang = lang.to_str();
-    let mut url = String::with_capacity(BASE.len() + 1 + word.len() + 4);
+    let mut url = String::with_capacity(BASE.len() + 4 + 1 + word.len());
     url.push_str(BASE);
     url.push_str(lang);
     url.push('/');
     url.push_str(word);
-    let r = ureq::get(&url).call()?.into_json::<RespRoot>()?;
-    Ok(r)
+    let r = ureq::get(&url).call()?;
+    let s = reader_to_json::<RespRoot>(&mut r.into_reader())?;
+    Ok(s)
+}
+
+fn reader_to_json<T: Deserialize>(r: &mut impl Read) -> Result<T, LocError> {
+    let mut buf = Vec::new();
+    reader_to_json_with_buf(r, &mut buf)
+}
+
+fn reader_to_json_with_buf<T: Deserialize>(
+    r: &mut impl Read,
+    buf: &mut Vec<u8>,
+) -> Result<T, LocError> {
+    unsafe { buf.set_len(0) };
+    let sz = r.read_to_end(buf)?;
+    let str = unsafe { std::str::from_utf8_unchecked(&buf[..sz]) };
+    Ok(json::from_str(str)?)
 }
 
 #[allow(clippy::upper_case_acronyms)]
@@ -254,11 +277,12 @@ impl Lang {
     }
 }
 
-#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum LocErr {
     IOErr(io::Error),
-    UreqErr(ureq::Error),
+    // UreqErr(ureq::Error),
+    UreqErr,
+    SerdeErr(miniserde::Error),
 }
 
 #[derive(Debug)]
@@ -285,13 +309,20 @@ impl Display for LocError {
 }
 impl From<ureq::Error> for LocError {
     #[track_caller]
-    fn from(value: ureq::Error) -> Self {
-        Self::new(LocErr::UreqErr(value))
+    fn from(_value: ureq::Error) -> Self {
+        Self::new(LocErr::UreqErr)
     }
 }
 impl From<io::Error> for LocError {
     #[track_caller]
     fn from(value: io::Error) -> Self {
         Self::new(LocErr::IOErr(value))
+    }
+}
+
+impl From<miniserde::Error> for LocError {
+    #[track_caller]
+    fn from(value: miniserde::Error) -> Self {
+        Self::new(LocErr::SerdeErr(value))
     }
 }
