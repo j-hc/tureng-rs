@@ -65,6 +65,12 @@ pub enum Lang {
     ENTR,
 }
 
+impl Default for Lang {
+    fn default() -> Self {
+        Self::ENTR
+    }
+}
+
 impl FromStr for Lang {
     type Err = ();
     fn from_str(s: &str) -> Result<Self, Self::Err> {

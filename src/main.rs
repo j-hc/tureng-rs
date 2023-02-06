@@ -4,7 +4,7 @@ use std::str::FromStr;
 use termion::event::Key;
 use termion::input::TermRead;
 use termion::raw::IntoRawMode;
-use termion::{clear, cursor};
+use termion::{clear, cursor, scroll};
 
 mod colorize;
 use colorize::ToColored;
@@ -12,26 +12,53 @@ use colorize::ToColored;
 mod api;
 use api::{translate, tureng_ac, Lang, RespResult};
 
+struct Args {
+    interactive: bool,
+    lang: Lang,
+    word: Option<String>,
+    limit: u16,
+}
+
+impl Default for Args {
+    fn default() -> Self {
+        Self {
+            interactive: false,
+            lang: Default::default(),
+            word: None,
+            limit: 8,
+        }
+    }
+}
+
+impl Args {
+    fn get_args(args: &mut std::env::Args) -> Option<Self> {
+        let mut res_args = Self::default();
+
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--limit" => res_args.limit = args.next()?.parse().ok()?,
+                "--interactive" | "-i" => res_args.interactive = true,
+                "--lang" | "-l" => {
+                    res_args.lang = Lang::from_str(&args.next()?).ok()?;
+                }
+                _ => res_args.word = Some(arg),
+            }
+        }
+        Some(res_args)
+    }
+}
+
 fn main() -> ExitCode {
-    let mut args = std::env::args();
-    let program = args.next().unwrap();
-    let Some(mut word) = args.next() else {
-        eprintln!("Usage: {program} <word> <optional ende|enes|enfr|entr>");
+    let mut envargs = std::env::args();
+    let program = envargs.next().unwrap();
+    let Some(args) = Args::get_args(&mut envargs) else {
+        eprintln!("Usage: {program} <word> <optional --lang, -l ende|enes|enfr|entr> <optional --interactive, -i>");
         return ExitCode::FAILURE;
     };
-    let lang = if let Some(arg) = args.next() {
-        let Ok(lang) = Lang::from_str(&arg) else {
-            eprintln!("Usage: {program} <word> <optional ende|enes|enfr|entr>");
-            return ExitCode::FAILURE;
-        };
-        lang
-    } else {
-        Lang::ENTR
-    };
 
-    if word == "-i" {
-        match interactive(lang) {
-            Ok(Some(w)) => word = w,
+    let word = if args.interactive {
+        match interactive(args.lang, args.limit) {
+            Ok(Some(w)) => w,
             Err(err) => {
                 eprintln!("ERROR: {err}");
                 return ExitCode::FAILURE;
@@ -41,8 +68,16 @@ fn main() -> ExitCode {
                 return ExitCode::SUCCESS;
             }
         }
-    }
-    let tr = match translate(&word, lang) {
+    } else {
+        if let Some(word) = args.word {
+            word
+        } else {
+            eprintln!("ERROR: No word was supplied!");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let tr = match translate(&word, args.lang) {
         Ok(resp) => resp,
         Err(err) => {
             eprintln!("ERROR: {err}");
@@ -89,8 +124,7 @@ fn repr_results(mut results: Vec<RespResult>, swap: bool) {
     }
 }
 
-fn interactive(lang: Lang) -> io::Result<Option<String>> {
-    const POPUP_SZ: u16 = 10;
+fn interactive(lang: Lang, popup_sz: u16) -> io::Result<Option<String>> {
     const PROMPT: &str = "> ";
     let mut ip: Vec<char> = Vec::new();
     let mut index: usize = 0;
@@ -102,8 +136,8 @@ fn interactive(lang: Lang) -> io::Result<Option<String>> {
     write!(
         stdout,
         "{}{}{}",
-        "\n".repeat(POPUP_SZ as usize),
-        cursor::Up(POPUP_SZ),
+        "\n".repeat(popup_sz as usize),
+        cursor::Up(popup_sz),
         PROMPT.green()
     )?;
     stdout.flush()?;
@@ -137,7 +171,7 @@ fn interactive(lang: Lang) -> io::Result<Option<String>> {
             Key::Left => input_cursor = input_cursor.saturating_sub(1),
             Key::Up => index = index.saturating_sub(1),
             Key::Down => {
-                if index + 1 < tr_results.len().min(POPUP_SZ as usize) {
+                if index + 1 < tr_results.len().min(popup_sz as usize) {
                     index += 1;
                 }
             }
@@ -163,7 +197,7 @@ fn interactive(lang: Lang) -> io::Result<Option<String>> {
             ip_str
         )?;
 
-        for (i, s) in tr_results.iter().take(POPUP_SZ as usize).enumerate() {
+        for (i, s) in tr_results.iter().take(popup_sz as usize).enumerate() {
             write!(stdout, "{}", '↪'.green())?;
             if i == index {
                 write!(stdout, " {}", s.white_bg())?;
@@ -175,7 +209,7 @@ fn interactive(lang: Lang) -> io::Result<Option<String>> {
         write!(
             stdout,
             "{}{}",
-            cursor::Up((POPUP_SZ.min(tr_results.len() as u16) + 1) as u16),
+            cursor::Up((popup_sz.min(tr_results.len() as u16) + 1) as u16),
             cursor::Right((PROMPT.len() + input_cursor) as u16)
         )?;
         stdout.flush()?;
