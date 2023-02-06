@@ -49,6 +49,7 @@ impl Args {
     }
 }
 
+// TODO: needs concurrency
 fn main() -> ExitCode {
     let mut envargs = std::env::args();
     let program = envargs.next().unwrap();
@@ -93,8 +94,6 @@ fn main() -> ExitCode {
 }
 
 fn repr_results(mut results: Vec<RespResult>, swap: bool) {
-    const WIDTH: usize = 26;
-    const WIDTH2: usize = WIDTH + 2;
     if swap {
         for r in results.iter_mut() {
             std::mem::swap(&mut r.term_a, &mut r.term_b);
@@ -102,17 +101,30 @@ fn repr_results(mut results: Vec<RespResult>, swap: bool) {
             std::mem::swap(&mut r.term_type_text_a, &mut r.term_type_text_b);
         }
     }
+    const INPUT: &str = "Input";
+    const TRANSLATION: &str = "Translation";
+
+    let mut w1 = INPUT.len();
+    let mut w2 = TRANSLATION.len();
+    for r in &results {
+        w1 = w1.max(r.term_a.len());
+        w2 = w2.max(r.term_b.len());
+    }
+    w1 = (w1 / 2) * 2 + 1;
+    w2 = (w2 / 2) * 2 + 1;
     println!(
-        "┌{:─^WIDTH$}┐   ┌{:─^WIDTH$}┐   ┌{:─^WIDTH$}┐   ┌{:─^WIDTH$}┐   ┌{:─^WIDTH$}┐\n",
-        "Input".red(),
-        "Translation".red(),
+        "┌{:─^w1$}┐   ┌{:─^w2$}┐   ┌{:─^16}┐   ┌{:─^10}┐   ┌{:─^8}┐\n",
+        INPUT.red(),
+        TRANSLATION.red(),
         "Category".red(),
         "Term Type".red(),
-        "Is slang?".red()
+        "Slang?".red()
     );
+    w1 += 2;
+    w2 += 2;
     for r in results {
         println!(
-            "{: ^WIDTH2$}   {: ^WIDTH2$}   {: ^WIDTH2$}   {: ^WIDTH2$}   {: ^WIDTH2$}",
+            "{: ^w1$}   {: ^w2$}   {: ^18}   {: ^12}   {: ^10}",
             r.term_a.magenta(),
             r.term_b.green(),
             r.category_text_b.yellow(),

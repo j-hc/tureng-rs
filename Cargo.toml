@@ -9,5 +9,10 @@ ureq = { version = "2.6", default-features = false }
 miniserde = "0.1"
 termion = "2"
 
-[profile.release]
+[profile.release-pr]
+inherits = "release"
+lto = true
+panic = "abort"
+codegen-units = 1
+strip = true
 opt-level = 3
