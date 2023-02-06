@@ -1,0 +1,12 @@
+[package]
+name = "tureng-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ureq = { version = "2.6", default-features = false, features = ["json"] }
+miniserde = "0.1"
+termion = "2"
+
+[profile.release]
+opt-level = 3
