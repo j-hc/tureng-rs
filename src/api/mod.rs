@@ -17,12 +17,11 @@ pub fn tureng_ac(
 ) -> Result<Vec<String>, LocError> {
     const BASE: &str = "http://ac.tureng.co/?t=";
     const PARAM: &str = "&l=";
-    let lang = lang.to_str();
     let mut url = String::with_capacity(BASE.len() + PARAM.len() + word.len() + 4);
     url.push_str(BASE);
     url.push_str(word);
     url.push_str(PARAM);
-    url.push_str(lang);
+    url.push_str(lang.to_str());
     let r = agent.get(&url).call()?;
     let s = reader_to_json_with_buf(&mut r.into_reader(), buf)?;
     Ok(s)

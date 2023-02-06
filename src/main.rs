@@ -1,10 +1,10 @@
-use std::io::{self, Write};
+use std::io::{self, BufWriter, Write};
 use std::process::ExitCode;
 use std::str::FromStr;
 use termion::event::Key;
 use termion::input::TermRead;
 use termion::raw::IntoRawMode;
-use termion::{clear, cursor, scroll};
+use termion::{clear, cursor};
 
 mod colorize;
 use colorize::ToColored;
@@ -25,7 +25,7 @@ impl Default for Args {
             interactive: false,
             lang: Default::default(),
             word: None,
-            limit: 8,
+            limit: 9,
         }
     }
 }
@@ -33,14 +33,11 @@ impl Default for Args {
 impl Args {
     fn get_args(args: &mut std::env::Args) -> Option<Self> {
         let mut res_args = Self::default();
-
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--limit" => res_args.limit = args.next()?.parse().ok()?,
                 "--interactive" | "-i" => res_args.interactive = true,
-                "--lang" | "-l" => {
-                    res_args.lang = Lang::from_str(&args.next()?).ok()?;
-                }
+                "--lang" | "-l" => res_args.lang = Lang::from_str(&args.next()?).ok()?,
                 _ => res_args.word = Some(arg),
             }
         }
@@ -64,7 +61,7 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
             _ => {
-                eprintln!("Not selection!");
+                eprintln!("No selection!");
                 return ExitCode::SUCCESS;
             }
         }
@@ -90,7 +87,6 @@ fn main() -> ExitCode {
     if !tr.bresults.is_empty() {
         repr_results(tr.bresults, true);
     }
-    println!();
     ExitCode::SUCCESS
 }
 
@@ -126,11 +122,11 @@ fn repr_results(mut results: Vec<RespResult>, swap: bool) {
 
 fn interactive(lang: Lang, popup_sz: u16) -> io::Result<Option<String>> {
     const PROMPT: &str = "> ";
-    let mut ip: Vec<char> = Vec::new();
+    let mut input = String::new();
     let mut index: usize = 0;
     let mut input_cursor: usize = 0;
 
-    let mut stdout = io::stdout().lock().into_raw_mode()?;
+    let mut stdout = BufWriter::new(io::stdout().lock().into_raw_mode()?);
     let stdin = io::stdin().lock();
 
     write!(
@@ -141,12 +137,12 @@ fn interactive(lang: Lang, popup_sz: u16) -> io::Result<Option<String>> {
         PROMPT.green()
     )?;
     stdout.flush()?;
-    let mut tr_results: Vec<String> = Vec::with_capacity(0);
+    let mut tr_results: Vec<String> = Vec::new();
     let mut agent = ureq::agent();
     let mut resp_buf: Vec<u8> = Vec::new();
     for key in stdin.keys() {
         let key = key?;
-        let prev_ip_len = ip.len();
+        let prev_ip_len = input.len();
         match key {
             Key::Char('\n') => {
                 write!(stdout, "{}\n\r", cursor::Down(tr_results.len() as u16))?;
@@ -156,15 +152,15 @@ fn interactive(lang: Lang, popup_sz: u16) -> io::Result<Option<String>> {
             Key::Backspace => {
                 if input_cursor > 0 {
                     input_cursor -= 1;
-                    ip.remove(input_cursor);
+                    input.remove(input_cursor);
                 }
             }
             Key::Char(c) => {
-                ip.push(c);
+                input.push(c);
                 input_cursor += 1;
             }
             Key::Right => {
-                if input_cursor < ip.len() {
+                if input_cursor < input.len() {
                     input_cursor += 1
                 }
             }
@@ -183,9 +179,8 @@ fn interactive(lang: Lang, popup_sz: u16) -> io::Result<Option<String>> {
             _ => continue,
         }
 
-        let ip_str = String::from_iter(ip.iter());
-        if prev_ip_len != ip.len() {
-            if let Ok(r) = tureng_ac(&ip_str, lang, &mut agent, &mut resp_buf) {
+        if prev_ip_len != input.len() {
+            if let Ok(r) = tureng_ac(&input, lang, &mut agent, &mut resp_buf) {
                 tr_results = r;
             }
         }
@@ -194,7 +189,7 @@ fn interactive(lang: Lang, popup_sz: u16) -> io::Result<Option<String>> {
             "\r{}{}{}\r\n",
             clear::AfterCursor,
             PROMPT.green(),
-            ip_str
+            input
         )?;
 
         for (i, s) in tr_results.iter().take(popup_sz as usize).enumerate() {
@@ -209,7 +204,7 @@ fn interactive(lang: Lang, popup_sz: u16) -> io::Result<Option<String>> {
         write!(
             stdout,
             "{}{}",
-            cursor::Up((popup_sz.min(tr_results.len() as u16) + 1) as u16),
+            cursor::Up(popup_sz.min(tr_results.len() as u16) + 1),
             cursor::Right((PROMPT.len() + input_cursor) as u16)
         )?;
         stdout.flush()?;
