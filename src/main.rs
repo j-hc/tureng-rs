@@ -1,8 +1,4 @@
-use miniserde::{json, Deserialize};
-use std::error::Error;
-use std::fmt::Display;
-use std::io::{self, Read, Write};
-use std::panic::Location;
+use std::io::{self, Write};
 use std::process::ExitCode;
 use std::str::FromStr;
 use termion::event::Key;
@@ -13,9 +9,8 @@ use termion::{clear, cursor};
 mod colorize;
 use colorize::ToColored;
 
-mod resp;
-use resp::{RespResult, RespRoot};
-use ureq::Agent;
+mod api;
+use api::{translate, tureng_ac, Lang, RespResult};
 
 fn main() -> ExitCode {
     let mut args = std::env::args();
@@ -42,7 +37,7 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
             _ => {
-                eprintln!("Not selected");
+                eprintln!("Not selection!");
                 return ExitCode::SUCCESS;
             }
         }
@@ -60,7 +55,7 @@ fn main() -> ExitCode {
     if !tr.bresults.is_empty() {
         repr_results(tr.bresults, true);
     }
-
+    println!();
     ExitCode::SUCCESS
 }
 
@@ -95,34 +90,32 @@ fn repr_results(mut results: Vec<RespResult>, swap: bool) {
 }
 
 fn interactive(lang: Lang) -> io::Result<Option<String>> {
+    const POPUP_SZ: u16 = 10;
+    const PROMPT: &str = "> ";
     let mut ip: Vec<char> = Vec::new();
     let mut index: usize = 0;
     let mut input_cursor: usize = 0;
-    const POPUP_SZ: u16 = 8;
-    const PROMPT: &str = "> ";
 
     let mut stdout = io::stdout().lock().into_raw_mode()?;
     let stdin = io::stdin().lock();
-    let keys = stdin.keys();
 
     write!(
         stdout,
-        "{}{}{}{}",
+        "{}{}{}",
         "\n".repeat(POPUP_SZ as usize),
         cursor::Up(POPUP_SZ),
-        clear::AfterCursor,
         PROMPT.green()
     )?;
     stdout.flush()?;
     let mut tr_results: Vec<String> = Vec::with_capacity(0);
     let mut agent = ureq::agent();
     let mut resp_buf: Vec<u8> = Vec::new();
-    for key in keys {
+    for key in stdin.keys() {
         let key = key?;
         let prev_ip_len = ip.len();
         match key {
             Key::Char('\n') => {
-                write!(stdout, "{}\n\n\r", cursor::Down(POPUP_SZ),)?;
+                write!(stdout, "{}\n\r", cursor::Down(tr_results.len() as u16))?;
                 stdout.flush()?;
                 return Ok(tr_results.get(index).cloned());
             }
@@ -149,180 +142,43 @@ fn interactive(lang: Lang) -> io::Result<Option<String>> {
                 }
             }
             Key::Ctrl('c') => {
-                write!(stdout, "{}\n\n\r", cursor::Down(POPUP_SZ),)?;
+                write!(stdout, "{}\n\r", cursor::Down(tr_results.len() as u16))?;
                 stdout.flush()?;
                 return Ok(None);
             }
             _ => continue,
         }
+
+        let ip_str = String::from_iter(ip.iter());
         if prev_ip_len != ip.len() {
-            // let mut new_tr_results = Vec::new();
-            // new_tr_results.extend(tr_results.into_iter());
-            // new_tr_results.push("a bc".repeat(ip.len()).to_string());
-            // tr_results = new_tr_results;
-            let word = String::from_iter(ip.iter());
-            if let Ok(r) = tureng_ac(&word, lang, &mut agent, &mut resp_buf) {
+            if let Ok(r) = tureng_ac(&ip_str, lang, &mut agent, &mut resp_buf) {
                 tr_results = r;
-                tr_results.push(tr_results.len().to_string());
             }
         }
-
-        write!(stdout, "{}\r{}", cursor::Down(1), clear::AfterCursor)?;
-
-        for (i, s) in tr_results.iter().take(POPUP_SZ as usize).enumerate() {
-            if i == index {
-                write!(
-                    stdout,
-                    "{} {}{}\r",
-                    '↪'.green(),
-                    s.white_bg(),
-                    cursor::Down(1)
-                )?;
-            } else {
-                write!(stdout, "{}  {}{}\r", '↪'.green(), s, cursor::Down(1))?;
-            };
-        }
-
         write!(
             stdout,
-            "{}{}{}{}\r{}",
-            cursor::Up(POPUP_SZ.min(tr_results.len() as u16)),
-            clear::CurrentLine,
+            "\r{}{}{}\r\n",
+            clear::AfterCursor,
             PROMPT.green(),
-            String::from_iter(ip.iter()),
+            ip_str
+        )?;
+
+        for (i, s) in tr_results.iter().take(POPUP_SZ as usize).enumerate() {
+            write!(stdout, "{}", '↪'.green())?;
+            if i == index {
+                write!(stdout, " {}", s.white_bg())?;
+            } else {
+                write!(stdout, "  {}", s)?;
+            }
+            write!(stdout, "\r\n")?;
+        }
+        write!(
+            stdout,
+            "{}{}",
+            cursor::Up((POPUP_SZ.min(tr_results.len() as u16) + 1) as u16),
             cursor::Right((PROMPT.len() + input_cursor) as u16)
         )?;
         stdout.flush()?;
     }
     Ok(None)
-}
-
-fn tureng_ac(
-    word: &str,
-    lang: Lang,
-    agent: &mut Agent,
-    buf: &mut Vec<u8>,
-) -> Result<Vec<String>, LocError> {
-    const BASE: &str = "http://ac.tureng.co/?t=";
-    const PARAM: &str = "&l=";
-    let lang = lang.to_str();
-    let mut url = String::with_capacity(BASE.len() + PARAM.len() + word.len() + 4);
-    url.push_str(BASE);
-    url.push_str(word);
-    url.push_str(PARAM);
-    url.push_str(lang);
-    let r = agent.get(&url).call()?;
-    let s = reader_to_json_with_buf(&mut r.into_reader(), buf)?;
-    Ok(s)
-}
-
-fn translate(word: &str, lang: Lang) -> Result<RespRoot, LocError> {
-    const BASE: &str = "http://api.tureng.com/v1/dictionary/";
-    let lang = lang.to_str();
-    let mut url = String::with_capacity(BASE.len() + 4 + 1 + word.len());
-    url.push_str(BASE);
-    url.push_str(lang);
-    url.push('/');
-    url.push_str(word);
-    let r = ureq::get(&url).call()?;
-    let s = reader_to_json::<RespRoot>(&mut r.into_reader())?;
-    Ok(s)
-}
-
-fn reader_to_json<T: Deserialize>(r: &mut impl Read) -> Result<T, LocError> {
-    let mut buf = Vec::new();
-    reader_to_json_with_buf(r, &mut buf)
-}
-
-fn reader_to_json_with_buf<T: Deserialize>(
-    r: &mut impl Read,
-    buf: &mut Vec<u8>,
-) -> Result<T, LocError> {
-    unsafe { buf.set_len(0) };
-    let sz = r.read_to_end(buf)?;
-    let str = unsafe { std::str::from_utf8_unchecked(&buf[..sz]) };
-    Ok(json::from_str(str)?)
-}
-
-#[allow(clippy::upper_case_acronyms)]
-#[derive(Clone, Copy)]
-pub enum Lang {
-    ENDE,
-    ENES,
-    ENFR,
-    ENTR,
-}
-
-impl FromStr for Lang {
-    type Err = ();
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "ende" => Ok(Self::ENDE),
-            "enes" => Ok(Self::ENES),
-            "enfr" => Ok(Self::ENFR),
-            "entr" => Ok(Self::ENTR),
-            _ => Err(()),
-        }
-    }
-}
-
-impl Lang {
-    fn to_str(self) -> &'static str {
-        match self {
-            Lang::ENDE => "ende",
-            Lang::ENES => "enes",
-            Lang::ENFR => "enfr",
-            Lang::ENTR => "entr",
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum LocErr {
-    IOErr(io::Error),
-    // UreqErr(ureq::Error),
-    UreqErr,
-    SerdeErr(miniserde::Error),
-}
-
-#[derive(Debug)]
-pub struct LocError {
-    err: LocErr,
-    loc: &'static Location<'static>,
-}
-
-impl LocError {
-    #[track_caller]
-    pub fn new(err: LocErr) -> Self {
-        Self {
-            err,
-            loc: Location::caller(),
-        }
-    }
-}
-
-impl Error for LocError {}
-impl Display for LocError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{err:?}, {loc}", err = self.err, loc = self.loc)
-    }
-}
-impl From<ureq::Error> for LocError {
-    #[track_caller]
-    fn from(_value: ureq::Error) -> Self {
-        Self::new(LocErr::UreqErr)
-    }
-}
-impl From<io::Error> for LocError {
-    #[track_caller]
-    fn from(value: io::Error) -> Self {
-        Self::new(LocErr::IOErr(value))
-    }
-}
-
-impl From<miniserde::Error> for LocError {
-    #[track_caller]
-    fn from(value: miniserde::Error) -> Self {
-        Self::new(LocErr::SerdeErr(value))
-    }
 }
