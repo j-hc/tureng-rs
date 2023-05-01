@@ -137,9 +137,39 @@ fn repr_results(mut results: Vec<RespResult>, swap: bool) {
     }
 }
 
+struct UTF32String {
+    inner: Vec<char>,
+}
+impl UTF32String {
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    fn to_string(&self) -> String {
+        self.inner.iter().collect()
+    }
+
+    fn remove(&mut self, i: usize) {
+        self.inner.remove(i);
+    }
+
+    fn push(&mut self, c: char) {
+        self.inner.push(c);
+    }
+}
+
+impl std::fmt::Display for UTF32String {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        for c in &self.inner {
+            write!(f, "{c}")?;
+        }
+        Ok(())
+    }
+}
+
 fn interactive(lang: Lang, popup_sz: u16) -> io::Result<Option<String>> {
     const PROMPT: &str = "> ";
-    let mut input = String::new();
+    let mut input = UTF32String { inner: Vec::new() };
     let mut index: usize = 0;
     let mut input_cursor: usize = 0;
 
@@ -157,6 +187,7 @@ fn interactive(lang: Lang, popup_sz: u16) -> io::Result<Option<String>> {
     let mut tr_results: Vec<String> = Vec::new();
     let mut agent = ureq::agent();
     let mut resp_buf: Vec<u8> = Vec::new();
+
     for key in stdin.keys() {
         let key = key?;
         let prev_ip_len = input.len();
@@ -197,7 +228,7 @@ fn interactive(lang: Lang, popup_sz: u16) -> io::Result<Option<String>> {
         }
 
         if prev_ip_len != input.len() {
-            if let Ok(r) = tureng_ac(&input, lang, &mut agent, &mut resp_buf) {
+            if let Ok(r) = tureng_ac(&input.to_string(), lang, &mut agent, &mut resp_buf) {
                 tr_results = r;
             }
         }
@@ -212,7 +243,7 @@ fn interactive(lang: Lang, popup_sz: u16) -> io::Result<Option<String>> {
         for (i, s) in tr_results.iter().take(popup_sz as usize).enumerate() {
             write!(stdout, "{}", '↪'.green())?;
             if i == index {
-                write!(stdout, " {}", s.white_bg())?;
+                write!(stdout, " {}", s.black().white_bg())?;
             } else {
                 write!(stdout, "  {s}")?;
             }
