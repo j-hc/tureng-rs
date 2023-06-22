@@ -1,13 +1,10 @@
 # Tureng-rs
 
-Local [Tureng](https://tureng.com) client. Tureng is a translation service that can translate in these languages:
+Local [Tureng](https://tureng.com) client. Tureng is a translation service that can translate between these languages:
 * Turkish - English
 * German - English
 * Spanish - English
 * French - English
-
-
-and vice versa.
 
 ## Usage
 ```console
@@ -17,4 +14,4 @@ $ tureng-rs schmeckt --lang ende
 
 ## Demo
 
-![](https://user-images.githubusercontent.com/25510067/217073942-9572bbf0-206d-41e7-9452-d58be1c2f17b.gif)
+![](https://github.com/j-hc/tureng-rs/assets/25510067/d76af51e-9bae-42f2-ab19-d8fdb5a29ca1)

@@ -1,7 +1,15 @@
-use std::fmt::Display;
+use std::{fmt::Display, io::IsTerminal, sync::Once};
 use termion::color;
 
-use crate::ISATTY;
+static mut IS_ATTY: bool = false;
+
+fn is_atty() -> bool {
+    static IS_ATTY_INIT: Once = Once::new();
+    unsafe {
+        IS_ATTY_INIT.call_once(|| IS_ATTY = std::io::stdout().is_terminal());
+        IS_ATTY
+    }
+}
 
 pub struct Colored<D> {
     d: D,
@@ -10,7 +18,7 @@ pub struct Colored<D> {
 
 impl<D: Display> Display for Colored<D> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let isatty = unsafe { ISATTY };
+        let isatty = is_atty();
         if isatty {
             f.write_str(self.code)?;
         }

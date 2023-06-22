@@ -1,6 +1,8 @@
 use std::io::{self, BufWriter, Write};
 use std::process::ExitCode;
 use std::str::FromStr;
+use std::sync::mpsc::{channel, sync_channel, Receiver, SyncSender};
+use std::time::Instant;
 use termion::event::Key;
 use termion::input::TermRead;
 use termion::raw::IntoRawMode;
@@ -11,8 +13,6 @@ use colorize::ToColored;
 
 mod api;
 use api::{translate, tureng_ac, Lang, RespResult};
-
-static mut ISATTY: bool = false;
 
 struct Args {
     interactive: bool,
@@ -51,9 +51,7 @@ impl Args {
     }
 }
 
-// TODO: needs concurrency
 fn main() -> ExitCode {
-    unsafe { ISATTY = libc::isatty(libc::STDOUT_FILENO) != 0 }
     let mut envargs = std::env::args();
     let program = envargs.next().unwrap();
     let Some(args) = Args::get_args(&mut envargs) else {
@@ -69,7 +67,7 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
             _ => {
-                eprintln!("No selection!");
+                eprintln!("{}", "No selection!".red());
                 return ExitCode::SUCCESS;
             }
         }
@@ -116,7 +114,7 @@ fn repr_results(mut results: Vec<RespResult>, swap: bool) {
     w1 = (w1 / 2) * 2 + 1;
     w2 = (w2 / 2) * 2 + 1;
     println!(
-        "┌{:─^w1$}┐   ┌{:─^w2$}┐   ┌{:─^16}┐   ┌{:─^10}┐   ┌{:─^8}┐\n",
+        "┌{:─^w1$}┐   ┌{:─^w2$}┐   ┌{:─^16}┐   ┌{:─^11}┐   ┌{:─^8}┐\n",
         INPUT.red(),
         TRANSLATION.red(),
         "Category".red(),
@@ -127,7 +125,7 @@ fn repr_results(mut results: Vec<RespResult>, swap: bool) {
     w2 += 2;
     for r in results {
         println!(
-            "{: ^w1$}   {: ^w2$}   {: ^18}   {: ^12}   {: ^10}",
+            "{: ^w1$}   {: ^w2$}   {: ^18}   {: ^13}   {: ^10}",
             r.term_a.magenta(),
             r.term_b.green(),
             r.category_text_b.yellow(),
@@ -141,20 +139,27 @@ struct UTF32String {
     inner: Vec<char>,
 }
 impl UTF32String {
+    fn insert(&mut self, index: usize, element: char) {
+        self.inner.insert(index, element)
+    }
     fn len(&self) -> usize {
         self.inner.len()
     }
-
-    fn to_string(&self) -> String {
-        self.inner.iter().collect()
-    }
-
     fn remove(&mut self, i: usize) {
         self.inner.remove(i);
     }
-
-    fn push(&mut self, c: char) {
-        self.inner.push(c);
+    fn trim(&self) -> &[char] {
+        let s = self
+            .inner
+            .iter()
+            .position(|c| !c.is_ascii_whitespace())
+            .unwrap_or(0);
+        let e = self
+            .inner
+            .iter()
+            .rposition(|c| !c.is_ascii_whitespace())
+            .unwrap_or(self.inner.len());
+        &self.inner[s..e]
     }
 }
 
@@ -167,15 +172,53 @@ impl std::fmt::Display for UTF32String {
     }
 }
 
+struct AutoComplete {
+    buf: Vec<u8>,
+    lang: Lang,
+
+    rx: Receiver<String>,
+    tx: SyncSender<Vec<String>>,
+}
+impl AutoComplete {
+    fn complete(&mut self) {
+        while let Ok(r) = self.rx.recv() {
+            if let Ok(r) = tureng_ac(&r, self.lang, &mut self.buf) {
+                if self.tx.send(r).is_err() {
+                    return;
+                }
+            }
+        }
+    }
+}
+
 fn interactive(lang: Lang, popup_sz: u16) -> io::Result<Option<String>> {
+    let (keys_tx, keys_rx) = channel();
+    std::thread::spawn(move || {
+        for k in io::stdin().lock().keys().flatten() {
+            if keys_tx.send(k).is_err() {
+                break;
+            }
+        }
+    });
+    let (sender, ac_receiver) = sync_channel(0);
+    let (ac_sender, receiver) = sync_channel(0);
+    std::thread::spawn(move || {
+        AutoComplete {
+            buf: Vec::new(),
+            lang,
+            rx: ac_receiver,
+            tx: ac_sender,
+        }
+        .complete()
+    });
+
+    let mut stdout = BufWriter::new(io::stdout().lock().into_raw_mode()?);
     const PROMPT: &str = "> ";
     let mut input = UTF32String { inner: Vec::new() };
     let mut index: usize = 0;
     let mut input_cursor: usize = 0;
 
-    let mut stdout = BufWriter::new(io::stdout().lock().into_raw_mode()?);
-    let stdin = io::stdin().lock();
-
+    let mut results_len: u16 = 0;
     write!(
         stdout,
         "{}{}{}",
@@ -184,78 +227,133 @@ fn interactive(lang: Lang, popup_sz: u16) -> io::Result<Option<String>> {
         PROMPT.green()
     )?;
     stdout.flush()?;
-    let mut tr_results: Vec<String> = Vec::new();
-    let mut agent = ureq::agent();
-    let mut resp_buf: Vec<u8> = Vec::new();
 
-    for key in stdin.keys() {
-        let key = key?;
-        let prev_ip_len = input.len();
-        match key {
-            Key::Char('\n') => {
-                write!(stdout, "{}\n\r", cursor::Down(tr_results.len() as u16))?;
-                stdout.flush()?;
-                return Ok(tr_results.get(index).cloned());
-            }
-            Key::Backspace => {
-                if input_cursor > 0 {
-                    input_cursor -= 1;
-                    input.remove(input_cursor);
+    let mut results = Vec::new();
+    let mut now = Instant::now();
+    let mut input_prev_hash = 0;
+
+    let mut loading_i = 0;
+    let mut is_loading = false;
+    loop {
+        let mut rerender = false;
+        if let Ok(key) = keys_rx.try_recv() {
+            match key {
+                Key::Char('\n') => {
+                    write!(stdout, "{}\n\r", cursor::Down(results_len))?;
+                    stdout.flush()?;
+                    return Ok(results.get(index).cloned());
                 }
-            }
-            Key::Char(c) => {
-                input.push(c);
-                input_cursor += 1;
-            }
-            Key::Right => {
-                if input_cursor < input.len() {
-                    input_cursor += 1
+                Key::Backspace => {
+                    if input_cursor > 0 {
+                        input_cursor -= 1;
+                        input.remove(input_cursor);
+                    }
                 }
-            }
-            Key::Left => input_cursor = input_cursor.saturating_sub(1),
-            Key::Up => index = index.saturating_sub(1),
-            Key::Down => {
-                if index + 1 < tr_results.len().min(popup_sz as usize) {
-                    index += 1;
+                Key::Char(c) => {
+                    input.insert(input_cursor, c);
+                    input_cursor += 1;
                 }
+                Key::Right => {
+                    if input_cursor < input.len() {
+                        input_cursor += 1
+                    }
+                }
+                Key::Left => input_cursor = input_cursor.saturating_sub(1),
+                Key::Up => {
+                    index = index.saturating_sub(1);
+                    rerender = true;
+                }
+                Key::Down => {
+                    if index + 1 < results_len.min(popup_sz) as usize {
+                        rerender = true;
+                        index += 1;
+                    }
+                }
+                Key::Ctrl('c') => {
+                    write!(stdout, "{}\n\r", cursor::Down(results_len))?;
+                    stdout.flush()?;
+                    return Ok(None);
+                }
+                Key::Ctrl('w') => {
+                    let e = input.inner[..input_cursor]
+                        .iter()
+                        .rposition(|c| c.is_ascii_whitespace())
+                        .unwrap_or(0);
+                    input.inner.drain(e..input_cursor);
+                    input_cursor = e;
+                }
+                _ => (),
             }
-            Key::Ctrl('c') => {
-                write!(stdout, "{}\n\r", cursor::Down(tr_results.len() as u16))?;
-                stdout.flush()?;
-                return Ok(None);
-            }
-            _ => continue,
+            now = Instant::now();
+            write!(
+                stdout,
+                "\r{}{}{}",
+                clear::CurrentLine,
+                PROMPT.green(),
+                input,
+            )?;
+            write!(
+                stdout,
+                "\r{}",
+                cursor::Right((PROMPT.len() + input_cursor) as u16)
+            )?;
+            stdout.flush()?;
+        }
+        if input.trim().len() != 0
+            && input.inner.iter().map(|c| *c as u32).sum::<u32>() != input_prev_hash
+            && now.elapsed().as_millis() > 200
+            && sender.try_send(input.to_string()).is_ok()
+        {
+            input_prev_hash = input.inner.iter().map(|c| *c as u32).sum();
+            is_loading = true;
         }
 
-        if prev_ip_len != input.len() {
-            if let Ok(r) = tureng_ac(&input.to_string(), lang, &mut agent, &mut resp_buf) {
-                tr_results = r;
-            }
+        if let Ok(r) = receiver.try_recv() {
+            is_loading = false;
+            rerender = true;
+            results = r;
         }
-        write!(
-            stdout,
-            "\r{}{}{}\r\n",
-            clear::AfterCursor,
-            PROMPT.green(),
-            input
-        )?;
 
-        for (i, s) in tr_results.iter().take(popup_sz as usize).enumerate() {
-            write!(stdout, "{}", '↪'.green())?;
-            if i == index {
-                write!(stdout, " {}", s.black().white_bg())?;
-            } else {
-                write!(stdout, "  {s}")?;
-            }
-            write!(stdout, "\r\n")?;
+        if is_loading {
+            const LOADING: &[&str] = &[
+                "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▁",
+            ];
+            loading_i += 1;
+            write!(
+                stdout,
+                "\r{}  {}\r{}",
+                cursor::Right((PROMPT.len() + input.len()) as u16),
+                LOADING[loading_i % LOADING.len()],
+                cursor::Right((PROMPT.len() + input_cursor) as u16),
+            )?;
+            stdout.flush()?;
         }
-        write!(
-            stdout,
-            "{}{}",
-            cursor::Up(popup_sz.min(tr_results.len() as u16) + 1),
-            cursor::Right((PROMPT.len() + input_cursor) as u16)
-        )?;
-        stdout.flush()?;
+
+        if rerender {
+            write!(stdout, "\r\n{}", clear::AfterCursor)?;
+            for (i, s) in results.iter().take(popup_sz as usize).enumerate() {
+                write!(stdout, "{}", '↪'.green())?;
+                if i == index {
+                    write!(stdout, " {}", s.black().white_bg())?;
+                } else {
+                    write!(stdout, "  {s}")?;
+                }
+                write!(stdout, "\r\n")?;
+            }
+            results_len = results.len() as u16;
+
+            write!(
+                stdout,
+                "{}\r{}{}{}\r{}",
+                cursor::Up(popup_sz.min(results_len) + 1),
+                clear::CurrentLine,
+                PROMPT.green(),
+                input,
+                cursor::Right((PROMPT.len() + input_cursor) as u16)
+            )?;
+
+            stdout.flush()?;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    Ok(None)
 }

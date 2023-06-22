@@ -7,22 +7,22 @@ use std::fmt::Display;
 use std::io::{self, Read};
 use std::panic::Location;
 use std::str::FromStr;
-use ureq::Agent;
 
-pub fn tureng_ac(
-    word: &str,
-    lang: Lang,
-    agent: &mut Agent,
-    buf: &mut Vec<u8>,
-) -> Result<Vec<String>, LocError> {
-    let url = ["http://ac.tureng.co/?t=", word,  "&l=", lang.to_str()].concat();
-    let r = agent.get(&url).call()?;
+pub fn tureng_ac(word: &str, lang: Lang, buf: &mut Vec<u8>) -> Result<Vec<String>, LocError> {
+    let url = ["http://ac.tureng.co/?t=", word, "&l=", lang.to_str()].concat();
+    let r = ureq::get(&url).call()?;
     let s = reader_to_json_with_buf(&mut r.into_reader(), buf)?;
     Ok(s)
 }
 
 pub fn translate(word: &str, lang: Lang) -> Result<RespRoot, LocError> {
-    let url = ["http://api.tureng.com/v1/dictionary/", lang.to_str(), "/", word].concat();
+    let url = [
+        "http://api.tureng.com/v1/dictionary/",
+        lang.to_str(),
+        "/",
+        word,
+    ]
+    .concat();
     let r = ureq::get(&url).call()?;
     let s = reader_to_json::<RespRoot>(&mut r.into_reader())?;
     Ok(s)
@@ -86,8 +86,7 @@ impl Lang {
 #[allow(clippy::enum_variant_names)]
 pub enum LocErr {
     IO(io::Error),
-    // UreqErr(ureq::Error),
-    Ureq,
+    Ureq(Box<ureq::Error>),
     Serde(miniserde::Error),
 }
 
@@ -115,8 +114,8 @@ impl Display for LocError {
 }
 impl From<ureq::Error> for LocError {
     #[track_caller]
-    fn from(_value: ureq::Error) -> Self {
-        Self::new(LocErr::Ureq)
+    fn from(value: ureq::Error) -> Self {
+        Self::new(LocErr::Ureq(Box::new(value)))
     }
 }
 impl From<io::Error> for LocError {
