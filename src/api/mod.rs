@@ -1,46 +1,47 @@
 pub mod resp;
 pub use resp::*;
 
-use miniserde::{json, Deserialize};
+use miniserde::{json};
 use std::error::Error;
 use std::fmt::Display;
-use std::io::{self, Read};
+use std::io::{self};
 use std::panic::Location;
 use std::str::FromStr;
 
-pub fn tureng_ac(word: &str, lang: Lang, buf: &mut Vec<u8>) -> Result<Vec<String>, LocError> {
-    let url = ["http://ac.tureng.co/?t=", word, "&l=", lang.to_str()].concat();
-    let r = ureq::get(&url).call()?;
-    let s = reader_to_json_with_buf(&mut r.into_reader(), buf)?;
-    Ok(s)
+pub async fn tureng_ac(
+    word: String,
+    lang: Lang,
+) -> Result<Vec<String>, reqwest::Error> {
+    let url = ["https://ac.tureng.co/?t=", &word, "&l=", lang.to_str()].concat();
+    let r = reqwest::get(&url).await?.text().await?;
+    Ok(json::from_str(&r).unwrap())
 }
 
-pub fn translate(word: &str, lang: Lang) -> Result<RespRoot, LocError> {
-    let url = [
+macro_rules! f {
+    ($($arg:expr,)*) => {{
+        let mut cap = 0;
+        $(
+            let arg: &str = $arg.as_ref();
+            cap += arg.len();
+        )*
+        let mut b = String::with_capacity(cap);
+        $(
+            let arg: &str = $arg.as_ref();
+            b.push_str(arg);
+        )*
+        b
+    }};
+}
+
+pub async fn translate(word: &str, lang: Lang) -> Result<RespRoot, reqwest::Error> {
+    let url = f!(
         "http://api.tureng.com/v1/dictionary/",
         lang.to_str(),
         "/",
         word,
-    ]
-    .concat();
-    let r = ureq::get(&url).call()?;
-    let s = reader_to_json::<RespRoot>(&mut r.into_reader())?;
-    Ok(s)
-}
-
-fn reader_to_json<T: Deserialize>(r: &mut impl Read) -> Result<T, LocError> {
-    let mut buf = Vec::new();
-    reader_to_json_with_buf(r, &mut buf)
-}
-
-fn reader_to_json_with_buf<T: Deserialize>(
-    r: &mut impl Read,
-    buf: &mut Vec<u8>,
-) -> Result<T, LocError> {
-    unsafe { buf.set_len(0) };
-    let sz = r.read_to_end(buf)?;
-    let str = unsafe { std::str::from_utf8_unchecked(&buf[..sz]) };
-    Ok(json::from_str(str)?)
+    );
+    let r = reqwest::get(&url).await?.text().await?;
+    Ok(json::from_str(&r).unwrap())
 }
 
 #[allow(clippy::upper_case_acronyms)]
@@ -86,7 +87,6 @@ impl Lang {
 #[allow(clippy::enum_variant_names)]
 pub enum LocErr {
     IO(io::Error),
-    Ureq(Box<ureq::Error>),
     Serde(miniserde::Error),
 }
 
@@ -110,12 +110,6 @@ impl Error for LocError {}
 impl Display for LocError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{err:?}, {loc}", err = self.err, loc = self.loc)
-    }
-}
-impl From<ureq::Error> for LocError {
-    #[track_caller]
-    fn from(value: ureq::Error) -> Self {
-        Self::new(LocErr::Ureq(Box::new(value)))
     }
 }
 impl From<io::Error> for LocError {

@@ -4,9 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-ureq = { version = "2.7", default-features = false }
 miniserde = "0.1"
-termion = "2"
+termion = "3"
+reqwest = "0.12.4"
+tokio = { version = "1.37.0", features = ["full"] }
+futures-concurrency = "7.6.0"
+futures-lite = "2.3.0"
 
 [profile.release-pr]
 inherits = "release"
