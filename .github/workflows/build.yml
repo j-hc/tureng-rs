@@ -1,0 +1,27 @@
+﻿on: push
+
+jobs:
+  build:
+    permissions: write-all
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          echo "stable" > rust-toolchain
+
+      - uses: actions-rs/toolchain@v1
+      - name: Build
+        run: |
+          cargo b --profile release-pr
+
+      - id: date
+        run: echo "date=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
+
+      - name: Upload
+        uses: svenstaro/upload-release-action@v2
+        with:
+          file: ./target/release-pr/tureng-rs
+          release_name: tureng-rs ${{ steps.date.outputs.date }}
+          tag: ${{ steps.date.outputs.date }}
+          overwrite: true
