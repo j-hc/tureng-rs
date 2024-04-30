@@ -1,21 +1,22 @@
+use api::{translate, tureng_ac, Lang, RespResult};
+use crossterm::cursor::{MoveDown, MoveLeft, MoveRight, MoveUp};
+use crossterm::event::{EventStream, KeyCode, KeyModifiers};
+use crossterm::queue;
+use crossterm::style::{Print, Stylize};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType};
+use futures_util::{FutureExt, StreamExt};
+use std::future::Future;
 use std::io::{self, BufWriter, Write};
 use std::pin::Pin;
 use std::process::ExitCode;
-use std::str::FromStr;
-use std::time::Instant;
-use termion::event::Key;
-use termion::input::TermRead;
-use termion::raw::IntoRawMode;
-use termion::{clear, cursor};
+use std::sync::OnceLock;
+use std::time::Duration;
 use tokio::select;
-use futures_concurrency::stream::Zip;
 
-mod colorize;
-use colorize::ToColored;
+use crate::colorize::ToColored;
 
 mod api;
-use api::{translate, tureng_ac, Lang, RespResult};
-
+mod colorize;
 struct Args {
     interactive: bool,
     lang: Lang,
@@ -53,17 +54,30 @@ impl Args {
     }
 }
 
-#[tokio::main]
+static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
+    let client = CLIENT.get_or_init(|| {
+        reqwest::ClientBuilder::new()
+            .http1_only()
+            .gzip(true)
+            .connection_verbose(true)
+            .build()
+            .expect("reqwest client")
+    });
+
     let mut envargs = std::env::args();
-    let program = envargs.next().unwrap();
+    let program = envargs.next().expect("program name");
     let Some(args) = Args::get_args(&mut envargs) else {
         eprintln!("Usage: {program} <word> <optional --lang, -l ende|enes|enfr|entr> <optional --interactive, -i> <option --limit>");
         return ExitCode::FAILURE;
     };
 
+    enable_raw_mode().expect("raw mode");
+    let mut stdout = BufWriter::new(io::stdout().lock());
     let word = if args.interactive {
-        match interactive(args.lang, args.limit).await {
+        match interactive(&mut stdout, args.lang, args.limit, client).await {
             Ok(Some(w)) => w,
             Err(err) => {
                 eprintln!("ERROR: {err}");
@@ -81,23 +95,30 @@ async fn main() -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    let tr = match translate(&word, args.lang).await {
+    let tr = match translate(client, &word, args.lang).await {
         Ok(resp) => resp,
         Err(err) => {
             eprintln!("ERROR: {err}");
             return ExitCode::FAILURE;
         }
     };
+    disable_raw_mode().expect("disable raw mode");
+
     if !tr.aresults.is_empty() {
-        repr_results(tr.aresults, false);
+        repr_results(&mut stdout, tr.aresults, false).unwrap();
     }
+    writeln!(stdout).unwrap();
     if !tr.bresults.is_empty() {
-        repr_results(tr.bresults, true);
+        repr_results(&mut stdout, tr.bresults, true).unwrap();
     }
     ExitCode::SUCCESS
 }
 
-fn repr_results(mut results: Vec<RespResult>, swap: bool) {
+fn repr_results(
+    stdout: &mut impl Write,
+    mut results: Vec<RespResult>,
+    swap: bool,
+) -> std::io::Result<()> {
     if swap {
         for r in results.iter_mut() {
             std::mem::swap(&mut r.term_a, &mut r.term_b);
@@ -116,26 +137,32 @@ fn repr_results(mut results: Vec<RespResult>, swap: bool) {
     }
     w1 = (w1 / 2) * 2 + 1;
     w2 = (w2 / 2) * 2 + 1;
-    println!(
+    writeln!(
+        stdout,
         "┌{:─^w1$}┐   ┌{:─^w2$}┐   ┌{:─^16}┐   ┌{:─^11}┐   ┌{:─^8}┐\n",
-        INPUT.red(),
-        TRANSLATION.red(),
-        "Category".red(),
-        "Term Type".red(),
-        "Slang?".red()
-    );
+        INPUT.with_red(),
+        TRANSLATION.with_red(),
+        "Category".with_red(),
+        "Term Type".with_red(),
+        "Slang?".with_red()
+    )?;
     w1 += 2;
     w2 += 2;
     for r in results {
-        println!(
+        writeln!(
+            stdout,
             "{: ^w1$}   {: ^w2$}   {: ^18}   {: ^13}   {: ^10}",
-            r.term_a.magenta(),
-            r.term_b.green(),
-            r.category_text_b.yellow(),
-            r.term_type_text_b.as_deref().unwrap_or("null").yellow(),
-            r.is_slang.yellow()
-        );
+            r.term_a.with_magenta(),
+            r.term_b.with_green(),
+            r.category_text_b.with_yellow(),
+            r.term_type_text_b
+                .as_deref()
+                .unwrap_or("null")
+                .with_yellow(),
+            r.is_slang.with_yellow()
+        )?;
     }
+    Ok(())
 }
 
 struct UTF32String {
@@ -158,12 +185,12 @@ impl UTF32String {
         let s = self
             .inner
             .iter()
-            .position(|c| !c.is_ascii_whitespace())
+            .position(|c| !c.is_whitespace())
             .unwrap_or(0);
         let e = self
             .inner
             .iter()
-            .rposition(|c| !c.is_ascii_whitespace())
+            .rposition(|c| !c.is_whitespace())
             .unwrap_or(self.inner.len());
         &self.inner[s..e]
     }
@@ -181,174 +208,154 @@ impl std::fmt::Display for UTF32String {
     }
 }
 
-async fn interactive(lang: Lang, popup_sz: u16) -> io::Result<Option<String>> {
-    let (keys_tx, mut keys_rx) = tokio::sync::mpsc::channel(8);
-    tokio::spawn(async move {
-        for i in termion::get_tty().unwrap().keys().flatten() {
-            keys_tx.send(i).await.unwrap();
-        }
-    });
+const PROMPT: &str = "> ";
 
-    let mut stdout = BufWriter::new(io::stdout().lock().into_raw_mode()?);
-    const PROMPT: &str = "> ";
+async fn interactive(
+    stdout: &mut impl Write,
+    lang: Lang,
+    popup_sz: u16,
+    client: &'static reqwest::Client,
+) -> io::Result<Option<String>> {
+    let mut events = EventStream::new();
+
     let mut input = UTF32String::new();
     let mut index: usize = 0;
     let mut input_cursor: usize = 0;
 
-    let mut results_len: u16 = 0;
-    write!(
+    queue!(
         stdout,
-        "{}{}{}",
-        "\n".repeat(popup_sz as usize),
-        cursor::Up(popup_sz),
-        PROMPT.green()
+        Print("\n".repeat(popup_sz as usize)),
+        MoveUp(popup_sz),
+        Print(PROMPT.green())
     )?;
     stdout.flush()?;
 
     let mut results = Vec::new();
-    let mut now = Instant::now();
     let mut input_prev_hash = 0;
-
     let mut loading_i = 0;
-    let mut is_loading = false;
 
-    let mut tureng_ac_future: Option<Pin<Result<Vec<String>, reqwest::Error>>> = None;
+    type OptionalBoxFuture<T> = Option<Pin<Box<dyn Future<Output = T>>>>;
+    let mut tureng_ac_task: OptionalBoxFuture<Result<Vec<String>, reqwest::Error>> = None;
+
+    let mut typing_delay = false;
     loop {
-        let mut rerender = false;
+        let mut render_results = false;
+        let event = events.next().fuse();
         select! {
-            key = keys_rx.recv() => {
-                match key.unwrap() {
-                    Key::Char('\n') => {
-                        write!(stdout, "{}\n\r", cursor::Down(results_len))?;
+            key = event => {
+                let key = match key.unwrap().unwrap() {
+                    crossterm::event::Event::Key(k) => k,
+                    _ => continue,
+                };
+                match key.code {
+                    KeyCode::Enter => {
+                        queue!(stdout, MoveDown(results.len() as u16), Print("\n\r"))?;
                         stdout.flush()?;
                         return Ok(results.get(index).cloned());
-                    }
-                    Key::Backspace => {
+                    },
+                    KeyCode::Backspace => {
                         if input_cursor > 0 {
                             input_cursor -= 1;
                             input.remove(input_cursor);
                         }
-                    }
-                    Key::Char(c) => {
+                    },
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        queue!(stdout, MoveDown(results.len() as u16), Print("\n\r"))?;
+                        stdout.flush()?;
+                        return Ok(None);
+                    },
+                    KeyCode::Char(c) => {
                         input.insert(input_cursor, c);
                         input_cursor += 1;
-                    }
-                    Key::Right => {
+                    },
+                    KeyCode::Right => {
                         if input_cursor < input.len() {
                             input_cursor += 1
                         }
-                    }
-                    Key::Left => input_cursor = input_cursor.saturating_sub(1),
-                    Key::Up => {
+                    },
+                    KeyCode::Left => {
+                        if input_cursor > 0 {
+                            input_cursor -= 1
+                        }
+                    },
+                    KeyCode::Up => {
                         index = index.saturating_sub(1);
-                        rerender = true;
-                    }
-                    Key::Down => {
-                        if index + 1 < results_len.min(popup_sz) as usize {
-                            rerender = true;
+                        render_results = true;
+                    },
+                    KeyCode::Down => {
+                        if index + 1 < results.len().min(popup_sz as usize) {
+                            render_results = true;
                             index += 1;
                         }
-                    }
-                    Key::Ctrl('c') => {
-                        write!(stdout, "{}\n\r", cursor::Down(results_len))?;
-                        stdout.flush()?;
-                        return Ok(None);
-                    }
-                    Key::Ctrl('w') => {
-                        let e = input.inner[..input_cursor]
-                            .iter()
-                            .rposition(|c| c.is_ascii_whitespace())
-                            .unwrap_or(0);
-                        input.inner.drain(e..input_cursor);
-                        input_cursor = e;
-                    }
-                    _ => (),
+                    },
+                    _ => continue,
                 }
-                now = Instant::now();
-                write!(
+                queue!(
                     stdout,
-                    "\r{}{}{}",
-                    clear::CurrentLine,
-                    PROMPT.green(),
-                    input,
-                )?;
-                write!(
-                    stdout,
-                    "\r{}",
-                    cursor::Right((PROMPT.len() + input_cursor) as u16)
+                    Print("\r"),
+                    Clear(ClearType::CurrentLine),
+                    Print(PROMPT.green()),
+                    Print(&input),
+                    Print("\r"),
+                    MoveRight((PROMPT.len() + input_cursor) as u16)
                 )?;
                 stdout.flush()?;
 
-                if input.trim().len() != 0 && input.inner.iter().map(|c| *c as u32).sum::<u32>() != input_prev_hash
-                // && now.elapsed().as_millis() > 200
-                {
-                    input_prev_hash = input.inner.iter().map(|c| *c as u32).sum();
-                    is_loading = true;
+                let current_hash = input.inner.iter().map(|c| *c as u32).sum::<u32>();
+                if !input.trim().is_empty() && current_hash != input_prev_hash {
+                    input_prev_hash = current_hash;
+                    tureng_ac_task = None;
+                    typing_delay = true;
+                } else {
+                    typing_delay = false;
                 }
             }
 
-            ac = ((tureng_ac(input.to_string_clone(), lang), tokio::time::sleep(std::time::Duration::from_millis(20)))).zip(), if is_loading => {
-                results = ac.unwrap();
-                rerender = true;
-                is_loading = false;
+            ac = async { tureng_ac_task.as_mut().unwrap().await }, if tureng_ac_task.is_some() => {
+                results = ac.expect("tureng request");
+                render_results = true;
+                tureng_ac_task = None;
             }
 
-            _ = tokio::time::sleep(std::time::Duration::from_millis(20)), if is_loading => {
+            _ = tokio::time::sleep(Duration::from_millis(250)), if typing_delay => {
+                let input = input.to_string_clone();
+                tureng_ac_task = Some(Box::pin(async move { tureng_ac(client, &input, lang).await }));
+                typing_delay = false;
+            }
+
+            _ = tokio::time::sleep(Duration::from_millis(20)), if tureng_ac_task.is_some() => {
                 const LOADING: &[&str] = &[
                     "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▁",
                 ];
-                loading_i += 1;
-                write!(
-                    stdout,
-                    "\r{}  {}\r{}",
-                    cursor::Right((PROMPT.len() + input.len()) as u16),
-                    LOADING[loading_i % LOADING.len()],
-                    cursor::Right((PROMPT.len() + input_cursor) as u16),
-                )?;
+                loading_i = (loading_i + 1) % LOADING.len();
+                queue!(stdout, Print("  "), Print(LOADING[loading_i]), MoveLeft(3))?;
                 stdout.flush()?;
             }
         }
 
-        // if input.trim().len() != 0
-        //     && input.inner.iter().map(|c| *c as u32).sum::<u32>() != input_prev_hash
-        //     && now.elapsed().as_millis() > 200
-        //     && sender.try_send(input.to_string()).is_ok()
-        // {
-        //     input_prev_hash = input.inner.iter().map(|c| *c as u32).sum();
-        //     is_loading = true;
-        // }
-
-        // if let Ok(r) = receiver.try_recv() {
-        //     is_loading = false;
-        //     rerender = true;
-        //     results = r;
-        // }
-
-        if rerender {
-            write!(stdout, "\r\n{}", clear::AfterCursor)?;
+        if render_results {
+            queue!(stdout, Print("\r\n"), Clear(ClearType::FromCursorDown))?;
             for (i, s) in results.iter().take(popup_sz as usize).enumerate() {
-                write!(stdout, "{}", '↪'.green())?;
+                let s = s.as_str();
+                queue!(stdout, Print("↪".green()))?;
                 if i == index {
-                    write!(stdout, " {}", s.black().white_bg())?;
+                    queue!(stdout, Print(" "), Print(&s.black().on_white()))?;
                 } else {
-                    write!(stdout, "  {s}")?;
+                    queue!(stdout, Print("  "), Print(s))?;
                 }
-                write!(stdout, "\r\n")?;
+                queue!(stdout, Print("\r\n"))?;
             }
-            results_len = results.len() as u16;
-
-            write!(
+            queue!(stdout, MoveUp(popup_sz.min(results.len() as u16) + 1))?;
+            queue!(
                 stdout,
-                "{}\r{}{}{}\r{}",
-                cursor::Up(popup_sz.min(results_len) + 1),
-                clear::CurrentLine,
-                PROMPT.green(),
-                input,
-                cursor::Right((PROMPT.len() + input_cursor) as u16)
+                Print("\r"),
+                Clear(ClearType::CurrentLine),
+                Print(PROMPT.green()),
+                Print(&input),
+                Print("\r"),
+                MoveRight((PROMPT.len() + input_cursor) as u16)
             )?;
-
             stdout.flush()?;
         }
-        // std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }

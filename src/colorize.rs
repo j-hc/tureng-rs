@@ -1,15 +1,4 @@
-use std::{fmt::Display, io::IsTerminal, sync::Once};
-use termion::color;
-
-static mut IS_ATTY: bool = false;
-
-fn is_atty() -> bool {
-    static IS_ATTY_INIT: Once = Once::new();
-    unsafe {
-        IS_ATTY_INIT.call_once(|| IS_ATTY = std::io::stdout().is_terminal());
-        IS_ATTY
-    }
-}
+use std::fmt::Display;
 
 pub struct Colored<D> {
     d: D,
@@ -18,74 +7,39 @@ pub struct Colored<D> {
 
 impl<D: Display> Display for Colored<D> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let isatty = is_atty();
-        if isatty {
-            f.write_str(self.code)?;
-        }
+        f.write_str(self.code)?;
         self.d.fmt(f)?;
-        if isatty {
-            f.write_str("\x1b[0m")?;
-        }
+        f.write_str("\x1b[0m")?;
         Ok(())
     }
 }
 
 pub trait ToColored: Display + Sized {
-    fn red(&self) -> Colored<&Self> {
+    fn with_red(&self) -> Colored<&Self> {
         Colored {
             d: self,
-            code: color::Red.fg_str(),
+            code: "\u{1b}[38;5;1m",
         }
     }
 
-    fn white_bg(&self) -> Colored<&Self> {
+    fn with_magenta(&self) -> Colored<&Self> {
         Colored {
             d: self,
-            code: color::White.bg_str(),
+            code: "\u{1b}[38;5;5m",
         }
     }
 
-    fn green(&self) -> Colored<&Self> {
+    fn with_green(&self) -> Colored<&Self> {
         Colored {
             d: self,
-            code: color::Green.fg_str(),
+            code: "\u{1b}[38;5;2m",
         }
     }
 
-    fn black(&self) -> Colored<&Self> {
+    fn with_yellow(&self) -> Colored<&Self> {
         Colored {
             d: self,
-            code: color::Black.fg_str(),
-        }
-    }
-    fn yellow(&self) -> Colored<&Self> {
-        Colored {
-            d: self,
-            code: color::Yellow.fg_str(),
-        }
-    }
-    fn blue(&self) -> Colored<&Self> {
-        Colored {
-            d: self,
-            code: color::Black.fg_str(),
-        }
-    }
-    fn magenta(&self) -> Colored<&Self> {
-        Colored {
-            d: self,
-            code: color::Magenta.fg_str(),
-        }
-    }
-    fn cyan(&self) -> Colored<&Self> {
-        Colored {
-            d: self,
-            code: color::Cyan.fg_str(),
-        }
-    }
-    fn white(&self) -> Colored<&Self> {
-        Colored {
-            d: self,
-            code: color::White.fg_str(),
+            code: "\u{1b}[38;5;3m",
         }
     }
 }

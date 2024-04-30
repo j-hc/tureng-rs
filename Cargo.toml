@@ -4,12 +4,16 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+reqwest = { version = "0.12", features = [
+	"gzip",
+	"native-tls",
+], default-features = false }
 miniserde = "0.1"
-termion = "3"
-reqwest = "0.12.4"
-tokio = { version = "1.37.0", features = ["full"] }
-futures-concurrency = "7.6.0"
-futures-lite = "2.3.0"
+tokio = { version = "1", features = ["rt", "macros"], default-features = false }
+crossterm = { version = "0.27", features = [
+	"event-stream",
+], default-features = false }
+futures-util = { version = "0.3", default-features = false }
 
 [profile.release-pr]
 inherits = "release"
@@ -17,4 +21,3 @@ lto = true
 panic = "abort"
 codegen-units = 1
 strip = true
-opt-level = 3

@@ -1,24 +1,11 @@
 pub mod resp;
+
+use miniserde::json;
+use reqwest::header::{HeaderMap, HeaderValue};
 pub use resp::*;
 
-use miniserde::{json};
-use std::error::Error;
-use std::fmt::Display;
-use std::io::{self};
-use std::panic::Location;
-use std::str::FromStr;
-
-pub async fn tureng_ac(
-    word: String,
-    lang: Lang,
-) -> Result<Vec<String>, reqwest::Error> {
-    let url = ["https://ac.tureng.co/?t=", &word, "&l=", lang.to_str()].concat();
-    let r = reqwest::get(&url).await?.text().await?;
-    Ok(json::from_str(&r).unwrap())
-}
-
 macro_rules! f {
-    ($($arg:expr,)*) => {{
+    ($($arg:expr),* $(,)?) => {{
         let mut cap = 0;
         $(
             let arg: &str = $arg.as_ref();
@@ -33,15 +20,61 @@ macro_rules! f {
     }};
 }
 
-pub async fn translate(word: &str, lang: Lang) -> Result<RespRoot, reqwest::Error> {
+async fn req(
+    client: &reqwest::Client,
+    url: &str,
+    headers: &[(&'static str, &'static str)],
+) -> Result<String, reqwest::Error> {
+    let mut hm = HeaderMap::with_capacity(headers.len());
+    for (k, v) in headers {
+        hm.append(*k, HeaderValue::from_static(v));
+    }
+    let r = client.get(url).headers(hm).send().await?.text().await?;
+    Ok(r)
+}
+
+pub async fn tureng_ac(
+    client: &reqwest::Client,
+    word: &str,
+    lang: Lang,
+) -> Result<Vec<String>, reqwest::Error> {
+    let url = f!("https://ac.tureng.co/?t=", &word, "&l=", lang.to_str());
+    let headers = [
+        ("Accept-Encoding", "gzip"),
+        ("Connection", "Keep-Alive"),
+        ("Host", "ac.tureng.co"),
+        ("User-Agent", "okhttp/4.10.0"),
+    ];
+    let r = req(client, &url, &headers).await?;
+    match json::from_str::<Vec<String>>(&r) {
+        Ok(json) => Ok(json),
+        Err(_) => panic!("tureng invalid response: '{r}' to '{url}'"),
+    }
+}
+
+pub async fn translate(
+    client: &reqwest::Client,
+    word: &str,
+    lang: Lang,
+) -> Result<RespRoot, reqwest::Error> {
     let url = f!(
-        "http://api.tureng.com/v1/dictionary/",
+        "https://api.tureng.com/v1/dictionary/",
         lang.to_str(),
         "/",
         word,
     );
-    let r = reqwest::get(&url).await?.text().await?;
-    Ok(json::from_str(&r).unwrap())
+    let headers = [
+        ("Accept", "application/json"),
+        ("Accept-Encoding", "gzip"),
+        ("Connection", "Keep-Alive"),
+        ("Host", "api.tureng.com"),
+        ("User-Agent", "okhttp/4.10.0"),
+    ];
+    let r = req(client, &url, &headers).await?;
+    match json::from_str::<RespRoot>(&r) {
+        Ok(json) => Ok(json),
+        Err(_) => panic!("tureng ac invalid response: {r}"),
+    }
 }
 
 #[allow(clippy::upper_case_acronyms)]
@@ -59,21 +92,8 @@ impl Default for Lang {
     }
 }
 
-impl FromStr for Lang {
-    type Err = ();
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "ende" => Ok(Self::ENDE),
-            "enes" => Ok(Self::ENES),
-            "enfr" => Ok(Self::ENFR),
-            "entr" => Ok(Self::ENTR),
-            _ => Err(()),
-        }
-    }
-}
-
 impl Lang {
-    fn to_str(self) -> &'static str {
+    pub fn to_str(self) -> &'static str {
         match self {
             Lang::ENDE => "ende",
             Lang::ENES => "enes",
@@ -81,47 +101,13 @@ impl Lang {
             Lang::ENTR => "entr",
         }
     }
-}
-
-#[derive(Debug)]
-#[allow(clippy::enum_variant_names)]
-pub enum LocErr {
-    IO(io::Error),
-    Serde(miniserde::Error),
-}
-
-#[derive(Debug)]
-pub struct LocError {
-    err: LocErr,
-    loc: &'static Location<'static>,
-}
-
-impl LocError {
-    #[track_caller]
-    pub fn new(err: LocErr) -> Self {
-        Self {
-            err,
-            loc: Location::caller(),
+    pub fn from_str(s: &str) -> Result<Self, ()> {
+        match s {
+            "ende" => Ok(Self::ENDE),
+            "enes" => Ok(Self::ENES),
+            "enfr" => Ok(Self::ENFR),
+            "entr" => Ok(Self::ENTR),
+            _ => Err(()),
         }
-    }
-}
-
-impl Error for LocError {}
-impl Display for LocError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{err:?}, {loc}", err = self.err, loc = self.loc)
-    }
-}
-impl From<io::Error> for LocError {
-    #[track_caller]
-    fn from(value: io::Error) -> Self {
-        Self::new(LocErr::IO(value))
-    }
-}
-
-impl From<miniserde::Error> for LocError {
-    #[track_caller]
-    fn from(value: miniserde::Error) -> Self {
-        Self::new(LocErr::Serde(value))
     }
 }
