@@ -328,7 +328,9 @@ async fn interactive(
                     "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▁",
                 ];
                 loading_i = (loading_i + 1) % LOADING.len();
-                queue!(stdout, Print("  "), Print(LOADING[loading_i]), MoveLeft(3))?;
+                queue!(stdout, Print("\r"), MoveRight((PROMPT.len() + input.len()) as u16))?;
+                queue!(stdout, Print("  "), Print(LOADING[loading_i]))?;
+                queue!(stdout, Print("\r"), MoveRight((PROMPT.len() + input_cursor) as u16))?;
                 stdout.flush()?;
             }
         }

@@ -73,7 +73,7 @@ pub async fn translate(
     let r = req(client, &url, &headers).await?;
     match json::from_str::<RespRoot>(&r) {
         Ok(json) => Ok(json),
-        Err(_) => panic!("tureng ac invalid response: {r}"),
+        Err(_) => panic!("tureng invalid response: '{r}' to '{url}'"),
     }
 }
 
