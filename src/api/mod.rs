@@ -1,8 +1,8 @@
 pub mod resp;
 
 use miniserde::json;
-use reqwest::header::{HeaderMap, HeaderValue};
 pub use resp::*;
+use std::sync::OnceLock;
 
 macro_rules! f {
     ($($arg:expr),* $(,)?) => {{
@@ -21,56 +21,53 @@ macro_rules! f {
 }
 
 async fn req(
-    client: &reqwest::Client,
     url: &str,
     headers: &[(&'static str, &'static str)],
 ) -> Result<String, reqwest::Error> {
-    let mut hm = HeaderMap::with_capacity(headers.len());
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    let client = CLIENT.get_or_init(|| {
+        reqwest::ClientBuilder::new()
+            .gzip(true)
+            .connection_verbose(true)
+            .http1_title_case_headers()
+            .http1_ignore_invalid_headers_in_responses(true)
+            .build()
+            .expect("reqwest client")
+    });
+    let mut req = client.get(url);
     for (k, v) in headers {
-        hm.append(*k, HeaderValue::from_static(v));
+        req = req.header(*k, *v);
     }
-    let r = client.get(url).headers(hm).send().await?.text().await?;
+    let r = req.send().await?.text().await?;
     Ok(r)
 }
 
-pub async fn tureng_ac(
-    client: &reqwest::Client,
-    word: &str,
-    lang: Lang,
-) -> Result<Vec<String>, reqwest::Error> {
+pub async fn tureng_ac(word: &str, lang: Lang) -> Result<Vec<String>, reqwest::Error> {
     let url = f!("https://ac.tureng.co/?t=", &word, "&l=", lang.to_str());
-    let headers = [
-        ("Accept-Encoding", "gzip"),
-        ("Connection", "Keep-Alive"),
-        ("Host", "ac.tureng.co"),
-        ("User-Agent", "okhttp/4.10.0"),
-    ];
-    let r = req(client, &url, &headers).await?;
+    let headers = [("accept-encoding", "gzip"), ("user-agent", "okhttp/4.11.0")];
+    let r = req(&url, &headers).await?;
     match json::from_str::<Vec<String>>(&r) {
         Ok(json) => Ok(json),
         Err(_) => panic!("tureng invalid response: '{r}' to '{url}'"),
     }
 }
 
-pub async fn translate(
-    client: &reqwest::Client,
-    word: &str,
-    lang: Lang,
-) -> Result<RespRoot, reqwest::Error> {
+pub async fn translate(word: &str, lang: Lang) -> Result<RespRoot, reqwest::Error> {
+    // TODO: make this https. for some reason, it doesnt work with https
     let url = f!(
-        "https://api.tureng.com/v1/dictionary/",
+        "http://api.tureng.com/v1/dictionary/",
         lang.to_str(),
         "/",
         word,
     );
     let headers = [
         ("Accept", "application/json"),
-        ("Accept-Encoding", "gzip"),
-        ("Connection", "Keep-Alive"),
+        ("User-Agent", "Dalvik/1.0.0 (Linux)"),
         ("Host", "api.tureng.com"),
-        ("User-Agent", "okhttp/4.10.0"),
+        ("Connection", "Keep-Alive"),
+        ("Accept-Encoding", "gzip"),
     ];
-    let r = req(client, &url, &headers).await?;
+    let r = req(&url, &headers).await?;
     match json::from_str::<RespRoot>(&r) {
         Ok(json) => Ok(json),
         Err(_) => panic!("tureng invalid response: '{r}' to '{url}'"),

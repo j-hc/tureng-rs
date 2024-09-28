@@ -42,8 +42,8 @@ pub struct RespResult {
     pub category_text_a: String,
     #[serde(rename = "CategoryTextB")]
     pub category_text_b: String,
-    #[serde(rename = "IsSlang")]
-    pub is_slang: bool,
+    // #[serde(rename = "IsSlang")]
+    // pub is_slang: bool,
     // #[serde(rename = "SourceId")]
     // pub source_id: String,
     // #[serde(rename = "Tags")]

@@ -1,5 +1,5 @@
 use api::{translate, tureng_ac, Lang, RespResult};
-use crossterm::cursor::{MoveDown, MoveLeft, MoveRight, MoveUp};
+use crossterm::cursor::{MoveDown, MoveRight, MoveUp};
 use crossterm::event::{EventStream, KeyCode, KeyModifiers};
 use crossterm::queue;
 use crossterm::style::{Print, Stylize};
@@ -9,7 +9,6 @@ use std::future::Future;
 use std::io::{self, BufWriter, Write};
 use std::pin::Pin;
 use std::process::ExitCode;
-use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::select;
 
@@ -54,19 +53,8 @@ impl Args {
     }
 }
 
-static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
-    let client = CLIENT.get_or_init(|| {
-        reqwest::ClientBuilder::new()
-            .http1_only()
-            .gzip(true)
-            .connection_verbose(true)
-            .build()
-            .expect("reqwest client")
-    });
-
     let mut envargs = std::env::args();
     let program = envargs.next().expect("program name");
     let Some(args) = Args::get_args(&mut envargs) else {
@@ -74,10 +62,9 @@ async fn main() -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    enable_raw_mode().expect("raw mode");
     let mut stdout = BufWriter::new(io::stdout().lock());
     let word = if args.interactive {
-        match interactive(&mut stdout, args.lang, args.limit, client).await {
+        match interactive(&mut stdout, args.lang, args.limit).await {
             Ok(Some(w)) => w,
             Err(err) => {
                 eprintln!("ERROR: {err}");
@@ -95,7 +82,7 @@ async fn main() -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    let tr = match translate(client, &word, args.lang).await {
+    let tr = match translate(&word, args.lang).await {
         Ok(resp) => resp,
         Err(err) => {
             eprintln!("ERROR: {err}");
@@ -139,19 +126,18 @@ fn repr_results(
     w2 = (w2 / 2) * 2 + 1;
     writeln!(
         stdout,
-        "┌{:─^w1$}┐   ┌{:─^w2$}┐   ┌{:─^16}┐   ┌{:─^11}┐   ┌{:─^8}┐\n",
+        "┌{:─^w1$}┐   ┌{:─^w2$}┐   ┌{:─^16}┐   ┌{:─^11}┐\n",
         INPUT.with_red(),
         TRANSLATION.with_red(),
         "Category".with_red(),
         "Term Type".with_red(),
-        "Slang?".with_red()
     )?;
     w1 += 2;
     w2 += 2;
     for r in results {
         writeln!(
             stdout,
-            "{: ^w1$}   {: ^w2$}   {: ^18}   {: ^13}   {: ^10}",
+            "{: ^w1$}   {: ^w2$}   {: ^18}   {: ^14}",
             r.term_a.with_magenta(),
             r.term_b.with_green(),
             r.category_text_b.with_yellow(),
@@ -159,7 +145,6 @@ fn repr_results(
                 .as_deref()
                 .unwrap_or("null")
                 .with_yellow(),
-            r.is_slang.with_yellow()
         )?;
     }
     Ok(())
@@ -214,8 +199,8 @@ async fn interactive(
     stdout: &mut impl Write,
     lang: Lang,
     popup_sz: u16,
-    client: &'static reqwest::Client,
 ) -> io::Result<Option<String>> {
+    enable_raw_mode().expect("raw mode");
     let mut events = EventStream::new();
 
     let mut input = UTF32String::new();
@@ -249,7 +234,7 @@ async fn interactive(
                 };
                 match key.code {
                     KeyCode::Enter => {
-                        queue!(stdout, MoveDown(results.len() as u16), Print("\n\r"))?;
+                        queue!(stdout, MoveDown(results.len().min(popup_sz as usize) as u16), Print("\n\r"))?;
                         stdout.flush()?;
                         return Ok(results.get(index).cloned());
                     },
@@ -319,7 +304,7 @@ async fn interactive(
 
             _ = tokio::time::sleep(Duration::from_millis(250)), if typing_delay => {
                 let input = input.to_string_clone();
-                tureng_ac_task = Some(Box::pin(async move { tureng_ac(client, &input, lang).await }));
+                tureng_ac_task = Some(Box::pin(async move { tureng_ac(&input, lang).await }));
                 typing_delay = false;
             }
 
